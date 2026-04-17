@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, orientation=landscape">
+    <title>NEON TUNNEL 2026 | BARREL ROLL EDITION</title>
+    <style>
+        :root {
+            --neon-blue: #00f2ff;
+            --neon-pink: #ff007f;
+            --glass: rgba(255, 255, 255, 0.1);
+        }
+        body, html { 
+            margin: 0; padding: 0; width: 100%; height: 100%; 
+            overflow: hidden; background: #000; color: white;
+            font-family: 'Orbitron', sans-serif;
+        }
+        
+        #landscape-alert {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: #000; display: flex; flex-direction: column; 
+            justify-content: center; align-items: center; z-index: 10000;
+        }
+        @media screen and (orientation: landscape) { #landscape-alert { display: none; } }
+
+        #ui-layer {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            pointer-events: none; z-index: 10;
+        }
+        
+        #joystick-wrapper {
+            position: absolute; bottom: 30px; left: 60px;
+            width: 150px; height: 150px;
+            background: var(--glass);
+            backdrop-filter: blur(20px);
+            border: 2px solid rgba(255, 255, 255, 0.2);
+            border-radius: 50%;
+            pointer-events: auto;
+        }
+        #joystick-knob {
+            position: absolute; top: 50%; left: 50%;
+            width: 65px; height: 65px;
+            background: rgba(255, 255, 255, 0.4);
+            border: 2px solid #fff;
+            border-radius: 50%;
+            transform: translate(-50%, -50%);
+            box-shadow: 0 0 15px #fff;
+        }
+
+        #hud {
+            position: absolute; top: 20px; width: 100%;
+            display: flex; justify-content: space-around;
+            pointer-events: none;
+        }
+        .stat {
+            background: var(--glass); padding: 10px 25px;
+            border-radius: 30px; border: 1px solid var(--neon-blue);
+            color: var(--neon-blue); text-shadow: 0 0 10px var(--neon-blue);
+        }
+
+        #gameover {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.95); display: none;
+            flex-direction: column; justify-content: center; align-items: center;
+            z-index: 2000; pointer-events: auto;
+        }
+        #restart-btn {
+            margin-top: 20px; padding: 15px 50px;
+            background: var(--neon-pink); border: none;
+            color: white; font-family: 'Orbitron'; font-weight: bold;
+            border-radius: 50px; cursor: pointer;
+            box-shadow: 0 0 20px var(--neon-pink);
+        }
+    </style>
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@700&display=swap" rel="stylesheet">
+</head>
+<body>
+
+    <div id="landscape-alert">
+        <h1 style="color:var(--neon-blue)">BASCULER EN PAYSAGE</h1>
+    </div>
+
+    <div id="gameover">
+        <h1 style="color:#ff0033; font-size: 50px;">CRASH SYSTÈME</h1>
+        <p>SCORE: <span id="final-score">0</span></p>
+        <button id="restart-btn">REDÉMARRER</button>
+    </div>
+
+    <div id="ui-layer">
+        <div id="hud">
+            <div class="stat">SCORE: <span id="score">0</span></div>
+            <div class="stat" style="color:var(--neon-pink); border-color:var(--neon-pink)">VITESSE: MAX</div>
+        </div>
+        <div id="joystick-wrapper"><div id="joystick-knob"></div></div>
+    </div>
+
+    <script type="module">
+        import * as THREE from 'https://cdnjs.cloudflare.com/ajax/libs/three.js/0.160.0/three.module.min.js';
+
+        let scene, camera, renderer, player, tunnel, clock;
+        let obstacles = [], moveX = 0, moveY = 0, distance = 0;
+        let isDead = false, gameSpeed = 1.8;
+        let targetRotationZ = 0; // Pour les tonneaux
+
+        const TUNNEL_RADIUS = 13;
+        const TUNNEL_LENGTH = 300;
+
+        function init() {
+            scene = new THREE.Scene();
+            clock = new THREE.Clock();
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
+            
+            renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            document.body.appendChild(renderer.domElement);
+
+            createTunnel();
+            createPlayer();
+            setupControls();
+            
+            scene.add(new THREE.AmbientLight(0xffffff, 0.5));
+            const sun = new THREE.PointLight(0x00f2ff, 10, 100);
+            sun.position.set(0, 5, 10);
+            scene.add(sun);
+
+            // FIX: Bouton retry
+            document.getElementById('restart-btn').addEventListener('touchstart', (e) => {
+                e.preventDefault();
+                resetGame();
+            });
+
+            animate();
+        }
+
+        function createTunnel() {
+            const geo = new THREE.CylinderGeometry(TUNNEL_RADIUS, TUNNEL_RADIUS, TUNNEL_LENGTH, 24, 1, true);
+            geo.rotateX(Math.PI / 2);
+            const mat = new THREE.MeshStandardMaterial({
+                color: 0x050505, emissive: 0x00f2ff, emissiveIntensity: 0.3,
+                side: THREE.BackSide, wireframe: true
+            });
+            tunnel = new THREE.Mesh(geo, mat);
+            scene.add(tunnel);
+
+            const tunnel2 = tunnel.clone();
+            tunnel2.position.z = -TUNNEL_LENGTH;
+            scene.add(tunnel2);
+            tunnel.userData = { next: tunnel2 };
+            tunnel2.userData = { next: tunnel };
+        }
+
+        function createPlayer() {
+            player = new THREE.Group();
+            const mat = new THREE.MeshStandardMaterial({ color: 0x111111, emissive: 0xff007f, emissiveIntensity: 2 });
+            
+            const body = new THREE.Mesh(new THREE.ConeGeometry(0.5, 3.5, 8), mat);
+            body.rotation.x = Math.PI / 2;
+            player.add(body);
+
+            const wings = new THREE.Mesh(new THREE.BoxGeometry(4.5, 0.1, 1.8), mat);
+            player.add(wings);
+
+            const cabin = new THREE.Mesh(new THREE.SphereGeometry(0.3, 8, 8), new THREE.MeshBasicMaterial({color: 0x00f2ff}));
+            cabin.position.y = 0.3; cabin.scale.z = 2;
+            player.add(cabin);
+
+            scene.add(player);
+        }
+
+        function setupControls() {
+            const wrapper = document.getElementById('joystick-wrapper');
+            const knob = document.getElementById('joystick-knob');
+
+            wrapper.addEventListener('touchmove', (e) => {
+                if(isDead) return;
+                const t = e.touches[0];
+                const r = wrapper.getBoundingClientRect();
+                const x = t.clientX - (r.left + r.width/2);
+                const y = t.clientY - (r.top + r.height/2);
+                const d = Math.min(Math.sqrt(x*x+y*y), 70);
+                const a = Math.atan2(y,x);
+                
+                const lx = Math.cos(a)*d;
+                const ly = Math.sin(a)*d;
+                knob.style.transform = `translate(calc(-50% + ${lx}px), calc(-50% + ${ly}px))`;
+                
+                moveX = lx/70;
+                moveY = -ly/70;
+                
+                // EFFET TONNEAU : Si on va fort à gauche ou droite
+                if(moveX > 0.8) targetRotationZ = -Math.PI * 2;
+                else if(moveX < -0.8) targetRotationZ = Math.PI * 2;
+                else targetRotationZ = -moveX * 1.5;
+
+            }, {passive: false});
+
+            wrapper.addEventListener('touchend', () => {
+                knob.style.transform = `translate(-50%,-50%)`;
+                moveX = 0; moveY = 0;
+                targetRotationZ = 0;
+            });
+        }
+
+        function spawnObstacle() {
+            const geo = new THREE.OctahedronGeometry(Math.random()*1.5 + 1.5, 0);
+            const mat = new THREE.MeshStandardMaterial({ color: 0x000000, emissive: 0xffaa00, emissiveIntensity: 3 });
+            const obs = new THREE.Mesh(geo, mat);
+            
+            const angle = Math.random() * Math.PI * 2;
+            const r = Math.random() * (TUNNEL_RADIUS - 3);
+            obs.position.set(Math.cos(angle)*r, Math.sin(angle)*r, -200);
+            
+            obstacles.push(obs);
+            scene.add(obs);
+        }
+
+        function resetGame() {
+            isDead = false;
+            distance = 0;
+            gameSpeed = 1.8;
+            player.position.set(0,0,0);
+            obstacles.forEach(o => scene.remove(o));
+            obstacles = [];
+            document.getElementById('gameover').style.display = 'none';
+            animate();
+        }
+
+        function animate() {
+            if(isDead) return;
+            requestAnimationFrame(animate);
+            const delta = clock.getDelta();
+
+            // Mouvement & Collision Murs
+            player.position.x += moveX * 0.9;
+            player.position.y += moveY * 0.9;
+
+            const dist = Math.sqrt(player.position.x**2 + player.position.y**2);
+            if(dist > TUNNEL_RADIUS - 2) {
+                const angle = Math.atan2(player.position.y, player.position.x);
+                player.position.x = Math.cos(angle) * (TUNNEL_RADIUS - 2);
+                player.position.y = Math.sin(angle) * (TUNNEL_RADIUS - 2);
+            }
+
+            // ROTATION TONNEAU FLUIDE
+            player.rotation.z = THREE.MathUtils.lerp(player.rotation.z, targetRotationZ, 0.1);
+
+            // Tunnel infini
+            [tunnel, tunnel.userData.next].forEach(t => {
+                t.position.z += gameSpeed * 60 * delta;
+                if(t.position.z > TUNNEL_LENGTH) t.position.z -= TUNNEL_LENGTH * 2;
+            });
+
+            // Obstacles & Difficulté
+            if(Math.random() < 0.1) spawnObstacle();
+            
+            for(let i=obstacles.length-1; i>=0; i--) {
+                const o = obstacles[i];
+                o.position.z += gameSpeed * 60 * delta;
+                o.rotation.y += 0.05;
+
+                // Collision
+                if(o.position.distanceTo(player.position) < 2.8) {
+                    isDead = true;
+                    document.getElementById('final-score').innerText = Math.floor(distance);
+                    document.getElementById('gameover').style.display = 'flex';
+                }
+
+                if(o.position.z > 20) {
+                    scene.remove(o);
+                    obstacles.splice(i, 1);
+                }
+            }
+
+            distance += delta * 30 * gameSpeed;
+            gameSpeed += delta * 0.015;
+            document.getElementById('score').innerText = Math.floor(distance);
+
+            // Caméra dynamique
+            camera.position.lerp(new THREE.Vector3(player.position.x*0.2, player.position.y*0.2 + 2, 10), 0.1);
+            camera.lookAt(0,0,-15);
+
+            renderer.render(scene, camera);
+        }
+
+        init();
+    </script>
+</body>
+</html>
